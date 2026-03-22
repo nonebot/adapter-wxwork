@@ -1,0 +1,115 @@
+[project]
+name = "nonebot-adapter-wxwork"
+version = "0.1.0"
+description = "WeCom adapter for nonebot2"
+authors = [{ name = "StarHeartHunt", email = "starheart233@gmail.com" }]
+license = "MIT"
+readme = "README.md"
+keywords = ["bot", "wecom", "wxwork", "work-wechat"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: Robot Framework",
+  "Framework :: Robot Framework :: Library",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+]
+requires-python = ">=3.10, <4.0"
+dependencies = ["nonebot2 ~=2.2"]
+
+[dependency-groups]
+dev = [
+  "ruff >=0.11.0, <0.12",
+  "pre-commit >=4.0.0, <5",
+  "nonebot2[fastapi, httpx, websockets]",
+]
+test = [
+  "trio >=0.27.0",
+  "nonebug >=0.4.1, <0.5.0",
+  "wsproto >=1.2.0, <2.0.0",
+  "werkzeug >=2.3.6, <4.0.0",
+  "pytest-cov >=7.0.0, <8.0.0",
+  "pytest-xdist >=3.0.2, <4.0.0",
+  "coverage-conditional-plugin >=0.9.0, <0.10.0",
+]
+
+[project.urls]
+homepage = "https://github.com/nonebot/adapter-wxwork"
+repository = "https://github.com/nonebot/adapter-wxwork"
+documentation = "https://github.com/nonebot/adapter-wxwork"
+
+[tool.uv]
+default-groups = ["dev", "test"]
+
+[tool.uv.sources]
+nonebot2 = { git = "https://github.com/nonebot/nonebot2.git", branch = "master" }
+nonebug = { git = "https://github.com/nonebot/nonebug.git", branch = "master" }
+
+[tool.uv.build-backend]
+module-name = "nonebot.adapters.wxwork"
+module-root = ""
+
+[tool.pytest.ini_options]
+addopts = ["--cov=nonebot.adapters.wxwork", "--cov-report=term-missing"]
+filterwarnings = ["error", "ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = [
+  "F",     # Pyflakes
+  "W",     # pycodestyle warnings
+  "E",     # pycodestyle errors
+  "I",     # isort
+  "UP",    # pyupgrade
+  "ASYNC", # flake8-async
+  "C4",    # flake8-comprehensions
+  "T10",   # flake8-debugger
+  "T20",   # flake8-print
+  "PYI",   # flake8-pyi
+  "PT",    # flake8-pytest-style
+  "Q",     # flake8-quotes
+  "TID",   # flake8-tidy-imports
+  "RUF",   # Ruff-specific rules
+]
+ignore = [
+  "E402",   # module-import-not-at-top-of-file
+  "UP037",  # quoted-annotation
+  "RUF001", # ambiguous-unicode-character-string
+  "RUF002", # ambiguous-unicode-character-docstring
+  "RUF003", # ambiguous-unicode-character-comment
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["nonebot", "tests/*"]
+extra-standard-library = ["typing_extensions"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true
+
+[tool.pyright]
+pythonVersion = "3.10"
+pythonPlatform = "All"
+defineConstant = { PYDANTIC_V2 = true }
+executionEnvironments = [
+  { root = "./tests", extraPaths = [
+    "./",
+  ] },
+  { root = "./" },
+]
+
+typeCheckingMode = "standard"
+reportShadowedImports = false
+disableBytesTypePromotions = true
+
+[build-system]
+requires = ["uv_build >=0.8.3, <0.10.0"]
+build-backend = "uv_build"
