@@ -27,7 +27,7 @@ from nonebot.drivers import (
 from nonebot.utils import escape_tag
 
 from .bot import Bot
-from .config import BotConfig, Config
+from .config import BotConfig, Config, WebhookBotConfig, WsBotConfig
 from .crypto import WxBizMsgCrypt
 from .event import (
     WEBHOOK_EVENT_EVENTS,
@@ -87,7 +87,7 @@ class Adapter(BaseAdapter):
         self.driver.on_shutdown(self.shutdown)
 
     async def startup(self) -> None:
-        for bot_config in self.wxwork_config.wxwork_bots:
+        for bot_config in self.wxwork_config.wxwork_webhook_bots:
             self_id = bot_config.self_id
             self.bot_config_by_id[self_id] = bot_config
             if self.bots.get(self_id):
@@ -97,20 +97,27 @@ class Adapter(BaseAdapter):
             self.bot_connect(bot)
             log("INFO", f"Bot {escape_tag(self_id)} connected")
 
-            if bot_config.use_ws:
-                task = asyncio.create_task(self._run_ws_bot(bot, bot_config))
-                task.add_done_callback(self.tasks.discard)
-                self.tasks.add(task)
-            else:
-                # Register GET (URL verification) and POST (message callback)
-                for method in ("GET", "POST"):
-                    setup = HTTPServerSetup(
-                        URL(f"/wxwork/{self_id}"),
-                        method,
-                        self.get_name(),
-                        self._handle_http,
-                    )
-                    self.setup_http_server(setup)
+            for method in ("GET", "POST"):
+                setup = HTTPServerSetup(
+                    URL(f"/wxwork/{self_id}"),
+                    method,
+                    self.get_name(),
+                    self._handle_http,
+                )
+                self.setup_http_server(setup)
+
+        for bot_config in self.wxwork_config.wxwork_ws_bots:
+            self_id = bot_config.self_id
+            self.bot_config_by_id[self_id] = bot_config
+            if self.bots.get(self_id):
+                continue
+
+            bot = Bot(self, self_id, bot_config=bot_config)
+            # WS 模式：仅在订阅成功后再 bot_connect，见 _ws_on_connected
+
+            task = asyncio.create_task(self._run_ws_bot(bot, bot_config))
+            task.add_done_callback(self.tasks.discard)
+            self.tasks.add(task)
 
     async def shutdown(self) -> None:
         for task in self.tasks:
@@ -122,7 +129,7 @@ class Adapter(BaseAdapter):
         """处理企业微信 Webhook 回调（GET 验证 + POST 消息）。"""
         self_id = request.url.parts[-1]
         bot_config = self.bot_config_by_id.get(self_id)
-        if bot_config is None:
+        if bot_config is None or not isinstance(bot_config, WebhookBotConfig):
             return Response(404, content=b"bot not found")
 
         bot = self.bots.get(self_id)
@@ -210,7 +217,7 @@ class Adapter(BaseAdapter):
     # WebSocket 长连接处理
     # ------------------------------------------------------------------
 
-    async def _run_ws_bot(self, bot: "Bot", bot_config: BotConfig) -> None:
+    async def _run_ws_bot(self, bot: "Bot", bot_config: WsBotConfig) -> None:
         """维护单个机器人的 WebSocket 长连接，含断线重连。"""
         if not isinstance(self.driver, WebSocketClientMixin):
             return
@@ -232,55 +239,67 @@ class Adapter(BaseAdapter):
                 await asyncio.sleep(5)
 
     async def _ws_on_connected(
-        self, ws: WebSocket, bot: "Bot", bot_config: BotConfig
+        self, ws: WebSocket, bot: "Bot", bot_config: WsBotConfig
     ) -> None:
         """处理已建立的 WebSocket 连接。"""
         bot._ws = ws
-
-        # 发送订阅请求
-        req_id = str(uuid.uuid4())
-        await ws.send_text(
-            json.dumps(
-                {
-                    "cmd": "aibot_subscribe",
-                    "headers": {"req_id": req_id},
-                    "body": {
-                        "bot_id": bot_config.bot_id,
-                        "secret": bot_config.secret,
-                    },
-                }
-            )
-        )
-        # 等待订阅结果
-        raw = await ws.receive_text()
-        resp = json.loads(raw)
-        if resp.get("errcode", -1) != 0:
-            raise RuntimeError(f"WS subscribe failed: {resp}")
-        log("INFO", f"Bot {escape_tag(bot_config.bot_id)} WS subscribed")
-
-        # 启动心跳任务
-        ping_task = asyncio.create_task(self._ws_ping_loop(ws))
+        registered = False
+        ping_task: asyncio.Task[None] | None = None
         try:
-            async for raw_msg in self._ws_receive_loop(ws):
-                try:
-                    data = json.loads(raw_msg)
-                except Exception:
-                    continue
-                event = self._ws_to_event(data)
-                if event is None:
-                    continue
-                if isinstance(event, WsDisconnectedEvent):
-                    log(
-                        "INFO",
-                        f"Bot {escape_tag(bot_config.bot_id)} WS disconnected by server",
-                    )
-                    break
-                task = asyncio.create_task(bot.handle_event(event))
-                task.add_done_callback(self.tasks.discard)
-                self.tasks.add(task)
+            # 发送订阅请求
+            sub_req_id = str(uuid.uuid4())
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "cmd": "aibot_subscribe",
+                        "headers": {"req_id": sub_req_id},
+                        "body": {
+                            "bot_id": bot_config.bot_id,
+                            "secret": bot_config.secret,
+                        },
+                    }
+                )
+            )
+            raw = await ws.receive_text()
+            resp = json.loads(raw)
+            if resp.get("errcode", -1) != 0:
+                raise RuntimeError(f"WS subscribe failed: {resp}")
+            log("INFO", f"Bot {escape_tag(bot_config.bot_id)} WS subscribed")
+
+            self.bot_connect(bot)
+            registered = True
+            log("INFO", f"Bot {escape_tag(bot_config.bot_id)} connected")
+
+            ping_task = asyncio.create_task(self._ws_ping_loop(ws))
+            try:
+                async for raw_msg in self._ws_receive_loop(ws):
+                    try:
+                        data = json.loads(raw_msg)
+                    except Exception:
+                        continue
+                    event = self._ws_to_event(data)
+                    if event is None:
+                        continue
+                    if isinstance(event, WsDisconnectedEvent):
+                        log(
+                            "INFO",
+                            f"Bot {escape_tag(bot_config.bot_id)} WS disconnected by server",
+                        )
+                        break
+                    task = asyncio.create_task(bot.handle_event(event))
+                    task.add_done_callback(self.tasks.discard)
+                    self.tasks.add(task)
+            finally:
+                if ping_task is not None:
+                    ping_task.cancel()
         finally:
-            ping_task.cancel()
             bot._ws = None
+            if registered and self.bots.get(bot.self_id) is bot:
+                self.bot_disconnect(bot)
+                log(
+                    "INFO",
+                    f"Bot {escape_tag(bot_config.bot_id)} disconnected (WS session ended)",
+                )
 
     async def _ws_receive_loop(self, ws: WebSocket):
         """异步生成器：持续接收 WebSocket 消息。"""
@@ -292,9 +311,11 @@ class Adapter(BaseAdapter):
                 break
 
     async def _ws_ping_loop(self, ws: WebSocket) -> None:
-        """每 30 秒发送一次心跳。"""
+        """发送应用层心跳：订阅成功后立即发一次，之后每 PING_INTERVAL 秒一次。
+
+        若先 sleep 再发首包，服务端可能在第 30 秒空闲超时关连接，与首条 ping 撞车。
+        """
         while True:
-            await asyncio.sleep(PING_INTERVAL)
             try:
                 await ws.send_text(
                     json.dumps(
@@ -306,6 +327,7 @@ class Adapter(BaseAdapter):
                 )
             except Exception:
                 break
+            await asyncio.sleep(PING_INTERVAL)
 
     @classmethod
     def _ws_to_event(cls, data: dict[str, Any]) -> Event | None:
@@ -316,16 +338,22 @@ class Adapter(BaseAdapter):
 
         try:
             if cmd == "aibot_msg_callback":
+                from_uid = body.get("from", {}).get("userid", "")
+                msgid_str = body.get("msgid", "")
+                msgtype = body.get("msgtype", "")
+                msg_id_int = int(msgid_str) if msgid_str.isdigit() else 0
                 event = WsMsgCallbackEvent(
                     cmd=cmd,
                     req_id=req_id,
-                    msgid=body.get("msgid", ""),
+                    msgid=msgid_str,
                     aibotid=body.get("aibotid", ""),
                     chatid=body.get("chatid", ""),
                     chattype=body.get("chattype", "single"),
-                    from_userid=body.get("from", {}).get("userid", ""),
-                    msgtype=body.get("msgtype", ""),
                     raw_body=body,
+                    FromUserName=from_uid,
+                    MsgType=msgtype,
+                    MsgId=msg_id_int,
+                    to_me=True,
                 )
                 return event
             elif cmd == "aibot_event_callback":
@@ -337,17 +365,22 @@ class Adapter(BaseAdapter):
                         req_id=req_id,
                         aibotid=body.get("aibotid", ""),
                     )
+                ct = body.get("create_time", 0)
+                try:
+                    create_time_int = int(ct) if ct is not None else 0
+                except (TypeError, ValueError):
+                    create_time_int = 0
                 return WsEventCallbackEvent(
                     cmd=cmd,
                     req_id=req_id,
                     msgid=body.get("msgid", ""),
-                    create_time=body.get("create_time", 0),
                     aibotid=body.get("aibotid", ""),
                     chatid=body.get("chatid", ""),
                     chattype=body.get("chattype", "single"),
-                    from_userid=body.get("from", {}).get("userid", ""),
-                    eventtype=eventtype,
                     raw_body=body,
+                    FromUserName=body.get("from", {}).get("userid", ""),
+                    Event=eventtype,
+                    CreateTime=create_time_int,
                 )
         except Exception as e:
             log("ERROR", f"Failed to parse WS event. Raw: {escape_tag(str(data))}", e)
@@ -357,7 +390,7 @@ class Adapter(BaseAdapter):
     # API 调用（Webhook 模式：发送消息 via REST API）
     # ------------------------------------------------------------------
 
-    async def get_access_token(self, bot_config: BotConfig) -> str:
+    async def get_access_token(self, bot_config: WebhookBotConfig) -> str:
         """获取（或缓存的）access_token。"""
         cached = self._access_tokens.get(bot_config.agent_id)
         if cached and cached[1] > time.time() + 60:
@@ -390,10 +423,11 @@ class Adapter(BaseAdapter):
         ).rstrip("/")
 
         # WebSocket 模式：通过 WS 发送命令
-        if bot_config.use_ws:
+        if isinstance(bot_config, WsBotConfig):
             return await self._ws_call_api(bot, api, **data)
 
         # Webhook 模式：通过 REST API 发送
+        assert isinstance(bot_config, WebhookBotConfig)
         access_token = await self.get_access_token(bot_config)
 
         if api == "send_message":

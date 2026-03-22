@@ -1,5 +1,6 @@
 """企业微信 Bot 实现。"""
 
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from typing_extensions import override
@@ -11,12 +12,36 @@ from nonebot.adapters import MessageSegment as BaseMessageSegment
 from nonebot.drivers import WebSocket
 from nonebot.message import handle_event as handle_event_core
 
-from .config import BotConfig
+from .config import BotConfig, WsBotConfig
 from .event import Event, WsMsgCallbackEvent
 from .message import Message, MessageSegment
 
 if TYPE_CHECKING:
     from .adapter import Adapter
+
+
+def _normalize_ws_send_data(send_data: dict[str, Any], *, respond: bool) -> dict[str, Any]:
+    """长连接下 ``aibot_respond_msg`` / ``aibot_send_msg`` 不支持与普通应用消息相同的 ``msgtype: text``。
+
+    回复消息需走流式结构（单次回复可用 ``finish=true``）；主动推送侧文档示例为 ``markdown``。
+    参见企业微信「智能机器人长连接」文档。
+    """
+    if send_data.get("msgtype") != "text":
+        return send_data
+    text_block = send_data.get("text")
+    content = text_block.get("content", "") if isinstance(text_block, dict) else ""
+    if not content:
+        return send_data
+    if respond:
+        return {
+            "msgtype": "stream",
+            "stream": {
+                "id": str(uuid.uuid4()),
+                "finish": True,
+                "content": content,
+            },
+        }
+    return {"msgtype": "markdown", "markdown": {"content": content}}
 
 
 async def _send(
@@ -39,7 +64,7 @@ async def _send(
         if not send_data:
             continue
 
-        if bot_config.use_ws:
+        if isinstance(bot_config, WsBotConfig):
             # WebSocket 模式：通过 aibot_respond_msg 或 aibot_send_msg 发送
             req_id = ""
             chat_id = ""
@@ -47,11 +72,12 @@ async def _send(
 
             if isinstance(event, WsMsgCallbackEvent):
                 req_id = event.req_id
-                chat_id = event.chatid or event.from_userid
+                chat_id = event.chatid or event.get_user_id()
                 chat_type = 2 if event.chattype == "group" else 1
 
             if req_id:
                 # 回复消息
+                send_data = _normalize_ws_send_data(send_data, respond=True)
                 result = await bot.call_api(
                     "aibot_respond_msg",
                     __req_id__=req_id,
@@ -59,6 +85,7 @@ async def _send(
                 )
             else:
                 # 主动推送
+                send_data = _normalize_ws_send_data(send_data, respond=False)
                 result = await bot.call_api(
                     "aibot_send_msg",
                     chatid=chat_id,
@@ -93,7 +120,13 @@ class Bot(BaseBot):
         Any,
     ] = _send
 
-    def __init__(self, adapter: "Adapter", self_id: str, *, bot_config: BotConfig):
+    def __init__(
+        self,
+        adapter: "Adapter",
+        self_id: str,
+        *,
+        bot_config: BotConfig,
+    ):
         super().__init__(adapter, self_id)
         self.bot_config: BotConfig = bot_config
         # WebSocket 连接实例（仅 WS 模式使用）
@@ -149,12 +182,14 @@ class Bot(BaseBot):
             if not send_data:
                 continue
             if req_id:
+                send_data = _normalize_ws_send_data(send_data, respond=True)
                 await self.call_api(
                     "aibot_respond_msg",
                     __req_id__=req_id,
                     **send_data,
                 )
             else:
+                send_data = _normalize_ws_send_data(send_data, respond=False)
                 await self.call_api(
                     "aibot_send_msg",
                     chatid=chatid,

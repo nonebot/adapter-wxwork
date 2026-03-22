@@ -7,6 +7,8 @@ WebSocket（长连接）模式：aibot_msg_callback / aibot_event_callback JSON�
 from typing import Any, Literal
 from typing_extensions import override
 
+from pydantic import Field
+
 from nonebot.adapters import Event as BaseEvent
 from nonebot.utils import escape_tag
 
@@ -322,99 +324,72 @@ class WsEvent(Event):
         raise ValueError("Event has no session_id!")
 
 
-class WsMsgCallbackEvent(WsEvent):
-    """WebSocket 消息回调（aibot_msg_callback）。"""
+class WsMsgCallbackEvent(MessageEvent):
+    """WebSocket 消息回调（aibot_msg_callback）。
 
-    __event__ = "ws.message"
+    继承 MessageEvent，与 Webhook 消息共用同一基类，便于插件统一注入 ``MessageEvent``。
+    构造时请同步设置 ``FromUserName`` / ``MsgType`` / ``MsgId``（与 Webhook 字段语义一致）。
+    """
 
     cmd: Literal["aibot_msg_callback"] = "aibot_msg_callback"
+    req_id: str = ""
+    """本条 WS 回调的请求 id，用于 ``aibot_respond_msg``。"""
     msgid: str = ""
+    """企业微信侧消息 id（字符串）。"""
     aibotid: str = ""
     chatid: str = ""
     chattype: str = "single"  # single / group
-    from_userid: str = ""
-    msgtype: str = ""
     # 原始消息数据，各消息类型字段由此字典持有
-    raw_body: dict[str, Any] = {}
+    raw_body: dict[str, Any] = Field(default_factory=dict)
 
     to_me: bool = True  # 长连接模式下机器人收到的消息默认认为是 @to_me
 
     @override
-    def get_type(self) -> Literal["message"]:
-        return "message"
-
-    @override
-    def get_event_name(self) -> str:
-        return f"ws.message.{self.msgtype}"
-
-    @override
     def get_event_description(self) -> str:
         content = ""
-        if self.msgtype == "text":
+        if self.MsgType == "text":
             content = self.raw_body.get("text", {}).get("content", "")
-        return f"{self.msgid} from {self.from_userid}: {escape_tag(content)}"
+        return f"{self.msgid} from {self.FromUserName}: {escape_tag(content)}"
 
     @override
     def get_message(self) -> Message:
-        if self.msgtype == "text":
+        if self.MsgType == "text":
             content = self.raw_body.get("text", {}).get("content", "")
             return Message(MessageSegment.text(content))
-        # 其他类型返回空消息
         return Message()
 
     @override
     def get_plaintext(self) -> str:
-        if self.msgtype == "text":
+        if self.MsgType == "text":
             return self.raw_body.get("text", {}).get("content", "")
         return ""
 
     @override
-    def get_user_id(self) -> str:
-        return self.from_userid
-
-    @override
     def get_session_id(self) -> str:
-        return self.chatid or self.from_userid
-
-    @override
-    def is_tome(self) -> bool:
-        return self.to_me
+        return self.chatid or self.FromUserName
 
 
-class WsEventCallbackEvent(WsEvent):
-    """WebSocket 事件回调（aibot_event_callback）。"""
+class WsEventCallbackEvent(EventMessage):
+    """WebSocket 事件回调（aibot_event_callback）。
 
-    __event__ = "ws.notice"
+    继承 EventMessage，与 Webhook 的 notice 事件对齐；``Event`` 字段对应 WS 的 ``eventtype``。
+    """
 
     cmd: Literal["aibot_event_callback"] = "aibot_event_callback"
+    req_id: str = ""
     msgid: str = ""
-    create_time: int = 0
     aibotid: str = ""
     chatid: str = ""
     chattype: str = "single"
-    from_userid: str = ""
-    eventtype: str = ""
-    raw_body: dict[str, Any] = {}
-
-    @override
-    def get_type(self) -> Literal["notice"]:
-        return "notice"
-
-    @override
-    def get_event_name(self) -> str:
-        return f"ws.notice.{self.eventtype}"
+    raw_body: dict[str, Any] = Field(default_factory=dict)
 
     @override
     def get_event_description(self) -> str:
-        return f"event={self.eventtype} from {self.from_userid}"
-
-    @override
-    def get_user_id(self) -> str:
-        return self.from_userid
+        return f"event={self.Event} from {self.FromUserName}"
 
     @override
     def get_session_id(self) -> str:
-        return self.chatid or self.from_userid
+        return self.chatid or self.FromUserName
 
 
 class WsDisconnectedEvent(WsEvent):

@@ -18,7 +18,7 @@ dependencies = ["nonebot2 ~=2.2", "cryptography>=42.0.0", "xmltodict>=0.13.0"]
 
 [dependency-groups]
 dev = [
-  "ruff >=0.11.0, <0.12",
+  "ruff >=0.15.0, <0.16",
   "pre-commit >=4.0.0, <5",
   "nonebot2[fastapi, httpx, websockets]",
 ]
@@ -53,7 +53,7 @@ addopts = ["--cov=nonebot.adapters.wxwork", "--cov-report=term-missing"]
 filterwarnings = ["error", "ignore::DeprecationWarning"]
 
 [tool.ruff]
-line-length = 88
+line-length = 120
 
 [tool.ruff.format]
 line-ending = "lf"
@@ -111,5 +111,5 @@ reportShadowedImports = false
 disableBytesTypePromotions = true
 
 [build-system]
-requires = ["uv_build >=0.8.3, <0.10.0"]
+requires = ["uv_build >=0.10.9, <0.11.0"]
 build-backend = "uv_build"
