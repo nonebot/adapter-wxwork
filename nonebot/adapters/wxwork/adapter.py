@@ -24,6 +24,7 @@ from nonebot.drivers import (
     WebSocket,
     WebSocketClientMixin,
 )
+from nonebot.exception import WebSocketClosed
 from nonebot.utils import escape_tag
 
 from .bot import Bot
@@ -45,8 +46,8 @@ from .exception import (
 )
 from .utils import log
 
-WS_URL = "wss://openws.work.weixin.qq.com"
 PING_INTERVAL = 30  # seconds
+RECONNECT_INTERVAL = 5  # seconds
 
 
 class Adapter(BaseAdapter):
@@ -61,41 +62,40 @@ class Adapter(BaseAdapter):
         self._access_tokens: dict[str, tuple[str, float]] = (
             {}
         )  # agent_id -> (token, expire_time)
-        self.setup()
+        self._setup()
 
     @classmethod
     @override
     def get_name(cls) -> str:
         return "WxWork"
 
-    def setup(self) -> None:
-        if not isinstance(self.driver, ASGIMixin):
-            raise RuntimeError(
-                f"Current driver {self.config.driver} "
-                "doesn't support reverse connections!"
-                f"{self.get_name()} Adapter needs a ASGI Driver to work."
-            )
+    def _setup(self) -> None:
+        if isinstance(self.driver, ASGIMixin):
+            self._setup_webhook()
 
-        if not isinstance(self.driver, HTTPClientMixin):
-            raise RuntimeError(
-                f"Current driver {self.config.driver} "
-                "doesn't support http client requests!"
-                f"{self.get_name()} Adapter needs a HTTPClient Driver to work."
-            )
+        if (
+            self.wxwork_config.wxwork_ws_bots
+            and len(self.wxwork_config.wxwork_ws_bots) > 0
+        ):
+            if not isinstance(self.driver, WebSocketClientMixin):
+                log(
+                    "WARNING",
+                    (
+                        f"Current driver {self.config.driver} does not support "
+                        "websocket client connections! Ignored"
+                    ),
+                )
+            else:
+                self.on_ready(self._start_forward)
 
-        self.driver.on_startup(self.startup)
-        self.driver.on_shutdown(self.shutdown)
+        self.driver.on_shutdown(self._stop)
 
-    async def startup(self) -> None:
+    def _setup_webhook(self) -> None:
         for bot_config in self.wxwork_config.wxwork_webhook_bots:
             self_id = bot_config.self_id
             self.bot_config_by_id[self_id] = bot_config
             if self.bots.get(self_id):
                 continue
-
-            bot = Bot(self, self_id, bot_config=bot_config)
-            self.bot_connect(bot)
-            log("INFO", f"Bot {escape_tag(self_id)} connected")
 
             for method in ("GET", "POST"):
                 setup = HTTPServerSetup(
@@ -106,24 +106,21 @@ class Adapter(BaseAdapter):
                 )
                 self.setup_http_server(setup)
 
-        for bot_config in self.wxwork_config.wxwork_ws_bots:
-            self_id = bot_config.self_id
-            self.bot_config_by_id[self_id] = bot_config
-            if self.bots.get(self_id):
-                continue
-
             bot = Bot(self, self_id, bot_config=bot_config)
-            # WS 模式：仅在订阅成功后再 bot_connect，见 _ws_on_connected
+            self.bot_connect(bot)
+            log("INFO", f"Bot {escape_tag(self_id)} connected")
 
-            task = asyncio.create_task(self._run_ws_bot(bot, bot_config))
+    async def _start_forward(self) -> None:
+        for bot_config in self.wxwork_config.wxwork_ws_bots:
+            bot = Bot(self, bot_config.self_id, bot_config=bot_config)
+            task = asyncio.create_task(self._forward_ws(bot, bot_config))
             task.add_done_callback(self.tasks.discard)
             self.tasks.add(task)
 
-    async def shutdown(self) -> None:
+    async def _stop(self) -> None:
         for task in self.tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
 
     async def _handle_http(self, request: Request) -> Response:
         """处理企业微信 Webhook 回调（GET 验证 + POST 消息）。"""
@@ -170,9 +167,10 @@ class Adapter(BaseAdapter):
             return Response(400, content=b"invalid xml")
 
         try:
-            decrypted = crypt.decrypt(msg_encrypt)
             if not crypt.verify_signature(msg_signature, timestamp, nonce, msg_encrypt):
                 return Response(403, content=b"invalid signature")
+
+            decrypted = crypt.decrypt(msg_encrypt)
         except Exception as e:
             log("ERROR", "Failed to decrypt message", e)
             return Response(400, content=b"decrypt failed")
@@ -213,102 +211,108 @@ class Adapter(BaseAdapter):
             )
             return None
 
-    # ------------------------------------------------------------------
-    # WebSocket 长连接处理
-    # ------------------------------------------------------------------
-
-    async def _run_ws_bot(self, bot: "Bot", bot_config: WsBotConfig) -> None:
+    async def _forward_ws(self, bot: "Bot", bot_config: WsBotConfig) -> None:
         """维护单个机器人的 WebSocket 长连接，含断线重连。"""
-        if not isinstance(self.driver, WebSocketClientMixin):
-            return
+        url = str(self.wxwork_config.wxwork_ws_url)
+        request = Request("GET", URL(url), headers={}, timeout=30.0)
+
         while True:
+            registered = False
+            ping_task: asyncio.Task[None] | None = None
             try:
-                log(
-                    "INFO",
-                    f"Bot {escape_tag(bot_config.bot_id)} connecting to WeCom WS...",
-                )
-                ws_setup = Request(
-                    "GET",
-                    WS_URL,
-                    headers={"User-Agent": "nonebot-adapter-wxwork"},
-                )
-                async with self.driver.websocket(ws_setup) as ws:
-                    await self._ws_on_connected(ws, bot, bot_config)
-            except Exception as e:
-                log("WARNING", f"WS connection error: {e!r}, reconnecting in 5s...")
-                await asyncio.sleep(5)
-
-    async def _ws_on_connected(
-        self, ws: WebSocket, bot: "Bot", bot_config: WsBotConfig
-    ) -> None:
-        """处理已建立的 WebSocket 连接。"""
-        bot._ws = ws
-        registered = False
-        ping_task: asyncio.Task[None] | None = None
-        try:
-            # 发送订阅请求
-            sub_req_id = str(uuid.uuid4())
-            await ws.send_text(
-                json.dumps(
-                    {
-                        "cmd": "aibot_subscribe",
-                        "headers": {"req_id": sub_req_id},
-                        "body": {
-                            "bot_id": bot_config.bot_id,
-                            "secret": bot_config.secret,
-                        },
-                    }
-                )
-            )
-            raw = await ws.receive_text()
-            resp = json.loads(raw)
-            if resp.get("errcode", -1) != 0:
-                raise RuntimeError(f"WS subscribe failed: {resp}")
-            log("INFO", f"Bot {escape_tag(bot_config.bot_id)} WS subscribed")
-
-            self.bot_connect(bot)
-            registered = True
-            log("INFO", f"Bot {escape_tag(bot_config.bot_id)} connected")
-
-            ping_task = asyncio.create_task(self._ws_ping_loop(ws))
-            try:
-                async for raw_msg in self._ws_receive_loop(ws):
+                async with self.websocket(request) as ws:
+                    log(
+                        "DEBUG",
+                        f"WebSocket Connection to {escape_tag(url)} established",
+                    )
                     try:
-                        data = json.loads(raw_msg)
-                    except Exception:
-                        continue
-                    event = self._ws_to_event(data)
-                    if event is None:
-                        continue
-                    if isinstance(event, WsDisconnectedEvent):
+                        bot._ws = ws
+
+                        # 发送订阅请求
+                        sub_req_id = str(uuid.uuid4())
+                        await ws.send_text(
+                            json.dumps(
+                                {
+                                    "cmd": "aibot_subscribe",
+                                    "headers": {"req_id": sub_req_id},
+                                    "body": {
+                                        "bot_id": bot_config.bot_id,
+                                        "secret": bot_config.secret,
+                                    },
+                                }
+                            )
+                        )
+                        raw = await ws.receive_text()
+                        resp = json.loads(raw)
+                        if resp.get("errcode", -1) != 0:
+                            raise RuntimeError(f"WS subscribe failed: {resp}")
                         log(
                             "INFO",
-                            f"Bot {escape_tag(bot_config.bot_id)} WS disconnected by server",
+                            f"Bot {escape_tag(bot_config.bot_id)} WS subscribed",
                         )
-                        break
-                    task = asyncio.create_task(bot.handle_event(event))
-                    task.add_done_callback(self.tasks.discard)
-                    self.tasks.add(task)
-            finally:
-                if ping_task is not None:
-                    ping_task.cancel()
-        finally:
-            bot._ws = None
-            if registered and self.bots.get(bot.self_id) is bot:
-                self.bot_disconnect(bot)
+
+                        self.bot_connect(bot)
+                        registered = True
+                        log(
+                            "INFO",
+                            f"<y>Bot {escape_tag(bot_config.bot_id)}</y> connected",
+                        )
+
+                        ping_task = asyncio.create_task(self._ws_ping_loop(ws))
+
+                        while True:
+                            raw_msg = await ws.receive_text()
+                            try:
+                                data = json.loads(raw_msg)
+                            except Exception:
+                                continue
+
+                            event = self._ws_to_event(data)
+                            if event is None:
+                                continue
+
+                            if isinstance(event, WsDisconnectedEvent):
+                                log(
+                                    "INFO",
+                                    f"Bot {escape_tag(bot_config.bot_id)} "
+                                    "WS disconnected by server",
+                                )
+                                break
+
+                            task = asyncio.create_task(bot.handle_event(event))
+                            task.add_done_callback(self.tasks.discard)
+                            self.tasks.add(task)
+                    except WebSocketClosed as e:
+                        log(
+                            "ERROR",
+                            "<r><bg #f8bbd0>WebSocket Closed</bg #f8bbd0></r>",
+                            e,
+                        )
+                    except Exception as e:
+                        log(
+                            "ERROR",
+                            "<r><bg #f8bbd0>"
+                            "Error while process data from websocket "
+                            f"{escape_tag(url)}. Trying to reconnect..."
+                            "</bg #f8bbd0></r>",
+                            e,
+                        )
+                    finally:
+                        if ping_task is not None:
+                            ping_task.cancel()
+                        bot._ws = None
+                        if registered:
+                            self.bot_disconnect(bot)
+
+            except Exception as e:
                 log(
-                    "INFO",
-                    f"Bot {escape_tag(bot_config.bot_id)} disconnected (WS session ended)",
+                    "ERROR",
+                    "<r><bg #f8bbd0>Error while setup websocket to "
+                    f"{escape_tag(url)}. Trying to reconnect...</bg #f8bbd0></r>",
+                    e,
                 )
 
-    async def _ws_receive_loop(self, ws: WebSocket):
-        """异步生成器：持续接收 WebSocket 消息。"""
-        while True:
-            try:
-                msg = await ws.receive_text()
-                yield msg
-            except Exception:
-                break
+            await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _ws_ping_loop(self, ws: WebSocket) -> None:
         """发送应用层心跳：订阅成功后立即发一次，之后每 PING_INTERVAL 秒一次。
