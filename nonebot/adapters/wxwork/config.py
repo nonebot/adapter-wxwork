@@ -61,10 +61,12 @@ class Config(BaseModel):
     企业微信适配器全局配置。
 
     - ``wxwork_api_base``: 全局默认 REST API 根地址（单机器人可在 ``api_base`` 覆盖）
+    - ``wxwork_ws_url``: WebSocket 长连接地址（默认官方 openws）
     - ``wxwork_webhook_bots``: Webhook 模式机器人列表
     - ``wxwork_ws_bots``: WebSocket 长连接模式机器人列表
     """
 
-    wxwork_api_base: HttpUrl = Field(HttpUrl("https://qyapi.weixin.qq.com"))
+    wxwork_api_base: str = "https://qyapi.weixin.qq.com"
+    wxwork_ws_url: str = "wss://openws.work.weixin.qq.com"
     wxwork_webhook_bots: list[WebhookBotConfig] = Field(default_factory=list)
     wxwork_ws_bots: list[WsBotConfig] = Field(default_factory=list)

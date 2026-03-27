@@ -1,9 +1,9 @@
 """企业微信 Bot 实现。"""
 
-import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from typing_extensions import override
+import uuid
 
 from nonebot.adapters import Bot as BaseBot
 from nonebot.adapters import Event as BaseEvent
@@ -20,7 +20,9 @@ if TYPE_CHECKING:
     from .adapter import Adapter
 
 
-def _normalize_ws_send_data(send_data: dict[str, Any], *, respond: bool) -> dict[str, Any]:
+def _normalize_ws_send_data(
+    send_data: dict[str, Any], *, respond: bool
+) -> dict[str, Any]:
     """长连接下 ``aibot_respond_msg`` / ``aibot_send_msg`` 不支持与普通应用消息相同的 ``msgtype: text``。
 
     回复消息需走流式结构（单次回复可用 ``finish=true``）；主动推送侧文档示例为 ``markdown``。
