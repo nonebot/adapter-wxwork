@@ -35,6 +35,8 @@ class MessageSegment(BaseMessageSegment["Message"]):
     def __str__(self) -> str:
         if self.is_text():
             return self.data.get("text", "")
+        if self.type == "voice":
+            return self.data.get("content", "")
         return ""
 
     @override
@@ -62,17 +64,49 @@ class MessageSegment(BaseMessageSegment["Message"]):
         return MessageSegment("text", {"text": str(text)})
 
     @staticmethod
-    def image(media_id: str, pic_url: str = "") -> "MessageSegment":
-        return MessageSegment("image", {"media_id": media_id, "pic_url": pic_url})
-
-    @staticmethod
-    def voice(media_id: str, fmt: str = "") -> "MessageSegment":
-        return MessageSegment("voice", {"media_id": media_id, "format": fmt})
-
-    @staticmethod
-    def video(media_id: str, thumb_media_id: str = "") -> "MessageSegment":
+    def image(
+        media_id: str = "",
+        pic_url: str = "",
+        *,
+        url: str = "",
+        aeskey: str = "",
+    ) -> "MessageSegment":
         return MessageSegment(
-            "video", {"media_id": media_id, "thumb_media_id": thumb_media_id}
+            "image",
+            {"media_id": media_id, "pic_url": pic_url, "url": url, "aeskey": aeskey},
+        )
+
+    @staticmethod
+    def voice(
+        media_id: str = "", fmt: str = "", *, content: str = ""
+    ) -> "MessageSegment":
+        return MessageSegment(
+            "voice", {"media_id": media_id, "format": fmt, "content": content}
+        )
+
+    @staticmethod
+    def video(
+        media_id: str = "",
+        thumb_media_id: str = "",
+        *,
+        url: str = "",
+        aeskey: str = "",
+    ) -> "MessageSegment":
+        return MessageSegment(
+            "video",
+            {
+                "media_id": media_id,
+                "thumb_media_id": thumb_media_id,
+                "url": url,
+                "aeskey": aeskey,
+            },
+        )
+
+    @staticmethod
+    def file(url: str = "", *, media_id: str = "", aeskey: str = "") -> "MessageSegment":
+        """文件消息。"""
+        return MessageSegment(
+            "file", {"url": url, "media_id": media_id, "aeskey": aeskey}
         )
 
     @staticmethod
@@ -130,11 +164,6 @@ class MessageSegment(BaseMessageSegment["Message"]):
             "send_video",
             {"media_id": media_id, "title": title, "description": description},
         )
-
-    @staticmethod
-    def file(media_id: str) -> "MessageSegment":
-        """发送文件消息。"""
-        return MessageSegment("file", {"media_id": media_id})
 
     def to_send_data(self) -> dict[str, Any]:
         """将 MessageSegment 转换为企业微信发送 API 的请求体字段。"""

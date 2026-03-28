@@ -4,7 +4,7 @@ Webhook（短连接）模式：POST XML 解密后得到以下事件类型。
 WebSocket（长连接）模式：aibot_msg_callback / aibot_event_callback JSON。
 """
 
-from typing import Any, Literal
+from typing import Literal
 from typing_extensions import override
 
 from pydantic import Field
@@ -13,6 +13,7 @@ from nonebot.adapters import Event as BaseEvent
 from nonebot.utils import escape_tag
 
 from .message import Message, MessageSegment
+from .models import WsEventCallbackBody, WsMsgCallbackBody
 
 # ---------------------------------------------------------------------------
 # 基类
@@ -339,29 +340,76 @@ class WsMsgCallbackEvent(MessageEvent):
     aibotid: str = ""
     chatid: str = ""
     chattype: str = "single"  # single / group
-    # 原始消息数据，各消息类型字段由此字典持有
-    raw_body: dict[str, Any] = Field(default_factory=dict)
+    body: WsMsgCallbackBody = Field(default_factory=WsMsgCallbackBody)
+    """解析后的消息体，各消息类型内容由对应字段持有。"""
 
     to_me: bool = True  # 长连接模式下机器人收到的消息默认认为是 @to_me
 
     @override
     def get_event_description(self) -> str:
-        content = ""
-        if self.MsgType == "text":
-            content = self.raw_body.get("text", {}).get("content", "")
+        content = self.get_plaintext()
         return f"{self.msgid} from {self.FromUserName}: {escape_tag(content)}"
 
-    @override
-    def get_message(self) -> Message:
-        if self.MsgType == "text":
-            content = self.raw_body.get("text", {}).get("content", "")
-            return Message(MessageSegment.text(content))
+    def _parse_message(self) -> Message:
+        """将 body 按 msgtype 解析为 Message。"""
+        msgtype = self.MsgType
+        b = self.body
+
+        if msgtype == "text" and b.text:
+            return Message(MessageSegment.text(b.text.content))
+
+        if msgtype == "image" and b.image:
+            return Message(
+                MessageSegment.image(url=b.image.url, aeskey=b.image.aeskey)
+            )
+
+        if msgtype == "voice" and b.voice:
+            return Message(MessageSegment.voice(content=b.voice.content))
+
+        if msgtype == "file" and b.file:
+            return Message(
+                MessageSegment.file(url=b.file.url, aeskey=b.file.aeskey)
+            )
+
+        if msgtype == "video" and b.video:
+            return Message(
+                MessageSegment.video(url=b.video.url, aeskey=b.video.aeskey)
+            )
+
+        if msgtype == "mixed" and b.mixed:
+            msg = Message()
+            for item in b.mixed.msg_item:
+                if item.msgtype == "text" and item.text:
+                    msg.append(MessageSegment.text(item.text.content))
+                elif item.msgtype == "image" and item.image:
+                    msg.append(
+                        MessageSegment.image(
+                            url=item.image.url, aeskey=item.image.aeskey
+                        )
+                    )
+            return msg
+
         return Message()
 
     @override
+    def get_message(self) -> Message:
+        return self._parse_message()
+
+    @override
     def get_plaintext(self) -> str:
-        if self.MsgType == "text":
-            return self.raw_body.get("text", {}).get("content", "")
+        msgtype = self.MsgType
+        b = self.body
+
+        if msgtype == "text" and b.text:
+            return b.text.content
+        if msgtype == "voice" and b.voice:
+            return b.voice.content
+        if msgtype == "mixed" and b.mixed:
+            parts: list[str] = []
+            for item in b.mixed.msg_item:
+                if item.msgtype == "text" and item.text:
+                    parts.append(item.text.content)
+            return "".join(parts)
         return ""
 
     @override
@@ -381,7 +429,7 @@ class WsEventCallbackEvent(EventMessage):
     aibotid: str = ""
     chatid: str = ""
     chattype: str = "single"
-    raw_body: dict[str, Any] = Field(default_factory=dict)
+    body: WsEventCallbackBody = Field(default_factory=WsEventCallbackBody)
 
     @override
     def get_event_description(self) -> str:
@@ -390,6 +438,37 @@ class WsEventCallbackEvent(EventMessage):
     @override
     def get_session_id(self) -> str:
         return self.chatid or self.FromUserName
+
+
+class WsEnterChatEvent(WsEventCallbackEvent):
+    """进入会话事件（enter_chat）。
+
+    用户当天首次进入机器人单聊会话时触发。
+    可通过 ``bot.ws_respond_welcome(event.req_id, message)`` 回复欢迎语。
+    """
+
+    __event__ = "notice.enter_chat"
+    Event: Literal["enter_chat"] = "enter_chat"
+
+
+class WsTemplateCardEvent(WsEventCallbackEvent):
+    """模板卡片事件（template_card_event）。
+
+    用户点击模板卡片按钮时触发。
+    """
+
+    __event__ = "notice.template_card_event"
+    Event: Literal["template_card_event"] = "template_card_event"
+
+
+class WsFeedbackEvent(WsEventCallbackEvent):
+    """用户反馈事件（feedback_event）。
+
+    用户对机器人回复进行反馈时触发。
+    """
+
+    __event__ = "notice.feedback_event"
+    Event: Literal["feedback_event"] = "feedback_event"
 
 
 class WsDisconnectedEvent(WsEvent):
@@ -431,4 +510,11 @@ WEBHOOK_EVENT_EVENTS: dict[str, type[EventMessage]] = {
     "VIEW": ViewMenuEvent,
     "scancode_push": ScanQREvent,
     "LOCATION": LocationSelectEvent,
+}
+
+# WebSocket 事件回调：key = eventtype
+WS_EVENT_TYPES: dict[str, type[WsEventCallbackEvent]] = {
+    "enter_chat": WsEnterChatEvent,
+    "template_card_event": WsTemplateCardEvent,
+    "feedback_event": WsFeedbackEvent,
 }

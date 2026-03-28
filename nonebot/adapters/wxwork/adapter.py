@@ -33,6 +33,7 @@ from .crypto import WxBizMsgCrypt
 from .event import (
     WEBHOOK_EVENT_EVENTS,
     WEBHOOK_MSG_EVENTS,
+    WS_EVENT_TYPES,
     Event,
     WsDisconnectedEvent,
     WsEventCallbackEvent,
@@ -357,7 +358,7 @@ class Adapter(BaseAdapter):
                     aibotid=body.aibotid,
                     chatid=body.chatid,
                     chattype=body.chattype,
-                    raw_body=envelope.body,
+                    body=body,
                     FromUserName=body.from_user.userid,
                     MsgType=body.msgtype,
                     MsgId=msg_id_int,
@@ -365,22 +366,24 @@ class Adapter(BaseAdapter):
                 )
             elif cmd == "aibot_event_callback":
                 body = WsEventCallbackBody.model_validate(envelope.body)
-                if body.event.eventtype == "disconnected_event":
+                eventtype = body.event.eventtype
+                if eventtype == "disconnected_event":
                     return WsDisconnectedEvent(
                         cmd=cmd,
                         req_id=req_id,
                         aibotid=body.aibotid,
                     )
-                return WsEventCallbackEvent(
+                event_cls = WS_EVENT_TYPES.get(eventtype, WsEventCallbackEvent)
+                return event_cls(
                     cmd=cmd,
                     req_id=req_id,
                     msgid=body.msgid,
                     aibotid=body.aibotid,
                     chatid=body.chatid,
                     chattype=body.chattype,
-                    raw_body=envelope.body,
+                    body=body,
                     FromUserName=body.from_user.userid,
-                    Event=body.event.eventtype,
+                    Event=eventtype,
                     CreateTime=body.create_time,
                 )
         except Exception as e:

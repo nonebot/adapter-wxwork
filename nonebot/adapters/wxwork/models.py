@@ -23,6 +23,58 @@ class WsFrom(BaseModel):
     userid: str = ""
 
 
+# ---------------------------------------------------------------------------
+# WS 消息回调 body 中的各消息类型内容模型
+# ---------------------------------------------------------------------------
+
+
+class WsTextContent(BaseModel):
+    """文本消息内容。"""
+
+    content: str = ""
+
+
+class WsImageContent(BaseModel):
+    """图片消息内容（长连接模式含 aeskey 用于解密）。"""
+
+    url: str = ""
+    aeskey: str = ""
+
+
+class WsVoiceContent(BaseModel):
+    """语音消息内容（长连接模式下已转为文本）。"""
+
+    content: str = ""
+
+
+class WsFileContent(BaseModel):
+    """文件消息内容。"""
+
+    url: str = ""
+    aeskey: str = ""
+
+
+class WsVideoContent(BaseModel):
+    """视频消息内容。"""
+
+    url: str = ""
+    aeskey: str = ""
+
+
+class WsMixedItem(BaseModel):
+    """图文混排消息中的单个条目。"""
+
+    msgtype: str = ""
+    text: WsTextContent | None = None
+    image: WsImageContent | None = None
+
+
+class WsMixedContent(BaseModel):
+    """图文混排消息内容。"""
+
+    msg_item: list[WsMixedItem] = Field(default_factory=list)
+
+
 class WsMsgCallbackBody(BaseModel):
     """aibot_msg_callback 的 body 部分。"""
 
@@ -32,6 +84,14 @@ class WsMsgCallbackBody(BaseModel):
     msgid: str = ""
     msgtype: str = ""
     from_user: WsFrom = Field(default_factory=WsFrom, alias="from")
+
+    # 各消息类型内容（按 msgtype 只有对应字段非 None）
+    text: WsTextContent | None = None
+    image: WsImageContent | None = None
+    voice: WsVoiceContent | None = None
+    file: WsFileContent | None = None
+    video: WsVideoContent | None = None
+    mixed: WsMixedContent | None = None
 
     model_config = {"populate_by_name": True}
 

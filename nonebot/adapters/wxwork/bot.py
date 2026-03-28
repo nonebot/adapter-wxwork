@@ -13,7 +13,7 @@ from nonebot.drivers import WebSocket
 from nonebot.message import handle_event as handle_event_core
 
 from .config import BotConfig, WsBotConfig
-from .event import Event, WsMsgCallbackEvent
+from .event import Event, WsEventCallbackEvent, WsMsgCallbackEvent
 from .message import Message, MessageSegment
 
 if TYPE_CHECKING:
@@ -72,7 +72,7 @@ async def _send(
             chat_id = ""
             chat_type = 1  # 默认单聊
 
-            if isinstance(event, WsMsgCallbackEvent):
+            if isinstance(event, (WsMsgCallbackEvent, WsEventCallbackEvent)):
                 req_id = event.req_id
                 chat_id = event.chatid or event.get_user_id()
                 chat_type = 2 if event.chattype == "group" else 1
