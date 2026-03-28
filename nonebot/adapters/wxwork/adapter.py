@@ -44,6 +44,13 @@ from .exception import (
     NetworkError,
     WxWorkAdapterException,
 )
+from .models import (
+    AccessTokenResponse,
+    ApiResponse,
+    WsEnvelope,
+    WsEventCallbackBody,
+    WsMsgCallbackBody,
+)
 from .utils import log
 
 PING_INTERVAL = 30  # seconds
@@ -243,8 +250,8 @@ class Adapter(BaseAdapter):
                             )
                         )
                         raw = await ws.receive_text()
-                        resp = json.loads(raw)
-                        if resp.get("errcode", -1) != 0:
+                        resp = WsEnvelope.model_validate_json(raw)
+                        if resp.errcode != 0:
                             raise RuntimeError(f"WS subscribe failed: {resp}")
                         log(
                             "INFO",
@@ -335,56 +342,46 @@ class Adapter(BaseAdapter):
 
     @classmethod
     def _ws_to_event(cls, data: dict[str, Any]) -> Event | None:
-        cmd = data.get("cmd", "")
-        headers = data.get("headers", {})
-        req_id = headers.get("req_id", "")
-        body = data.get("body", {})
-
         try:
+            envelope = WsEnvelope.model_validate(data)
+            cmd = envelope.cmd
+            req_id = envelope.headers.req_id
+
             if cmd == "aibot_msg_callback":
-                from_uid = body.get("from", {}).get("userid", "")
-                msgid_str = body.get("msgid", "")
-                msgtype = body.get("msgtype", "")
-                msg_id_int = int(msgid_str) if msgid_str.isdigit() else 0
-                event = WsMsgCallbackEvent(
+                body = WsMsgCallbackBody.model_validate(envelope.body)
+                msg_id_int = int(body.msgid) if body.msgid.isdigit() else 0
+                return WsMsgCallbackEvent(
                     cmd=cmd,
                     req_id=req_id,
-                    msgid=msgid_str,
-                    aibotid=body.get("aibotid", ""),
-                    chatid=body.get("chatid", ""),
-                    chattype=body.get("chattype", "single"),
-                    raw_body=body,
-                    FromUserName=from_uid,
-                    MsgType=msgtype,
+                    msgid=body.msgid,
+                    aibotid=body.aibotid,
+                    chatid=body.chatid,
+                    chattype=body.chattype,
+                    raw_body=envelope.body,
+                    FromUserName=body.from_user.userid,
+                    MsgType=body.msgtype,
                     MsgId=msg_id_int,
                     to_me=True,
                 )
-                return event
             elif cmd == "aibot_event_callback":
-                event_body = body.get("event", {})
-                eventtype = event_body.get("eventtype", "")
-                if eventtype == "disconnected_event":
+                body = WsEventCallbackBody.model_validate(envelope.body)
+                if body.event.eventtype == "disconnected_event":
                     return WsDisconnectedEvent(
                         cmd=cmd,
                         req_id=req_id,
-                        aibotid=body.get("aibotid", ""),
+                        aibotid=body.aibotid,
                     )
-                ct = body.get("create_time", 0)
-                try:
-                    create_time_int = int(ct) if ct is not None else 0
-                except (TypeError, ValueError):
-                    create_time_int = 0
                 return WsEventCallbackEvent(
                     cmd=cmd,
                     req_id=req_id,
-                    msgid=body.get("msgid", ""),
-                    aibotid=body.get("aibotid", ""),
-                    chatid=body.get("chatid", ""),
-                    chattype=body.get("chattype", "single"),
-                    raw_body=body,
-                    FromUserName=body.get("from", {}).get("userid", ""),
-                    Event=eventtype,
-                    CreateTime=create_time_int,
+                    msgid=body.msgid,
+                    aibotid=body.aibotid,
+                    chatid=body.chatid,
+                    chattype=body.chattype,
+                    raw_body=envelope.body,
+                    FromUserName=body.from_user.userid,
+                    Event=body.event.eventtype,
+                    CreateTime=body.create_time,
                 )
         except Exception as e:
             log("ERROR", f"Failed to parse WS event. Raw: {escape_tag(str(data))}", e)
@@ -408,12 +405,14 @@ class Adapter(BaseAdapter):
         )
         req = Request("GET", f"{api_base}/cgi-bin/gettoken?{params}")
         resp_data = await self.send_request(req)
-        if isinstance(resp_data, dict) and resp_data.get("errcode", 0) != 0:
-            raise ActionFailed(**resp_data)
-        token = resp_data["access_token"]
-        expires_in = resp_data.get("expires_in", 7200)
-        self._access_tokens[bot_config.agent_id] = (token, time.time() + expires_in)
-        return token
+        result = AccessTokenResponse.model_validate(resp_data)
+        if result.errcode != 0:
+            raise ActionFailed(errcode=result.errcode, errmsg=result.errmsg)
+        self._access_tokens[bot_config.agent_id] = (
+            result.access_token,
+            time.time() + result.expires_in,
+        )
+        return result.access_token
 
     @override
     async def _call_api(self, bot: Any, api: str, **data: Any) -> Any:
@@ -478,8 +477,12 @@ class Adapter(BaseAdapter):
                 raise ValueError("Empty response")
             if response.headers.get("Content-Type", "").find("application/json") != -1:
                 result = json.loads(response.content)
-                if isinstance(result, dict) and result.get("errcode", 0) != 0:
-                    raise ActionFailed(**result)
+                if isinstance(result, dict):
+                    api_resp = ApiResponse.model_validate(result)
+                    if api_resp.errcode != 0:
+                        raise ActionFailed(
+                            errcode=api_resp.errcode, errmsg=api_resp.errmsg
+                        )
                 return result
             return response.content
 
