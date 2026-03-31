@@ -1,12 +1,3 @@
-"""企业微信消息加解密（WXBizMsgCrypt）。
-
-算法：
-- 签名校验：SHA1(sort(token, timestamp, nonce, msg_encrypt))
-- 加密：AES-256-CBC, PKCS7 填充, IV = AESKey[:16]
-- AESKey = Base64Decode(EncodingAESKey + "=")
-- 密文格式：rand(16B) + msg_len(4B, big-endian) + msg + receiveid
-"""
-
 import base64
 import hashlib
 import os
@@ -23,17 +14,9 @@ def _compute_signature(token: str, timestamp: str, nonce: str, msg_encrypt: str)
 
 
 class WxBizMsgCrypt:
-    """企业微信消息加解密类。
-
-    :param token: 回调配置的 Token
-    :param encoding_aes_key: 回调配置的 EncodingAESKey（43位）
-    :param receive_id: ReceiveId，对于企业应用回调即为 corpid
-    """
-
     def __init__(self, token: str, encoding_aes_key: str, receive_id: str) -> None:
         self.token = token
         self.receive_id = receive_id
-        # AESKey = Base64Decode(EncodingAESKey + "=")
         self.aes_key = base64.b64decode(encoding_aes_key + "=")
         assert len(self.aes_key) == 32, "AESKey must be 32 bytes"
         self.iv = self.aes_key[:16]
@@ -53,7 +36,6 @@ class WxBizMsgCrypt:
         return data + bytes([pad_len] * pad_len)
 
     def decrypt(self, msg_encrypt: str) -> str:
-        """解密 msg_encrypt，返回明文 XML 字符串。"""
         aes_msg = base64.b64decode(msg_encrypt)
         cipher = Cipher(algorithms.AES(self.aes_key), modes.CBC(self.iv))
         decryptor = cipher.decryptor()
@@ -65,10 +47,10 @@ class WxBizMsgCrypt:
         msg_len = struct.unpack(">I", content[:4])[0]
         # 取 msg
         msg = content[4 : 4 + msg_len]
+
         return msg.decode("utf-8")
 
     def encrypt(self, msg: str, timestamp: str, nonce: str) -> dict[str, str]:
-        """加密明文 msg，返回包含 Encrypt/MsgSignature/TimeStamp/Nonce 的字典。"""
         msg_bytes = msg.encode("utf-8")
         random_bytes = os.urandom(16)
         msg_len_bytes = struct.pack(">I", len(msg_bytes))
@@ -80,6 +62,7 @@ class WxBizMsgCrypt:
         encrypted = encryptor.update(padded) + encryptor.finalize()
         msg_encrypt = base64.b64encode(encrypted).decode("utf-8")
         msg_signature = _compute_signature(self.token, timestamp, nonce, msg_encrypt)
+
         return {
             "Encrypt": msg_encrypt,
             "MsgSignature": msg_signature,
@@ -90,7 +73,7 @@ class WxBizMsgCrypt:
     def verify_url(
         self, msg_signature: str, timestamp: str, nonce: str, echostr: str
     ) -> str:
-        """验证 URL 有效性，返回解密后的明文（直接响应给企业微信）。"""
         if not self.verify_signature(msg_signature, timestamp, nonce, echostr):
             raise ActionFailed(errcode=-1, errmsg="invalid signature")
+
         return self.decrypt(echostr)

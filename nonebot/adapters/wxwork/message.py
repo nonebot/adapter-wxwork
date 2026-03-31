@@ -1,5 +1,3 @@
-"""企业微信协议 Message / MessageSegment 实现。"""
-
 from collections.abc import Iterable
 from typing import Any, Union
 from typing_extensions import override
@@ -9,19 +7,6 @@ from nonebot.adapters import MessageSegment as BaseMessageSegment
 
 
 class MessageSegment(BaseMessageSegment["Message"]):
-    """企业微信协议 MessageSegment。
-
-    支持的消息段类型（对应发送时的 msgtype）：
-    - text: 文本
-    - image: 图片
-    - voice: 语音
-    - video: 视频
-    - location: 位置
-    - link: 链接
-    - markdown: Markdown（发送 API）
-    - file: 文件（发送 API）
-    """
-
     @classmethod
     @override
     def get_message_class(cls) -> type["Message"]:
@@ -103,7 +88,9 @@ class MessageSegment(BaseMessageSegment["Message"]):
         )
 
     @staticmethod
-    def file(url: str = "", *, media_id: str = "", aeskey: str = "") -> "MessageSegment":
+    def file(
+        url: str = "", *, media_id: str = "", aeskey: str = ""
+    ) -> "MessageSegment":
         """文件消息。"""
         return MessageSegment(
             "file", {"url": url, "media_id": media_id, "aeskey": aeskey}

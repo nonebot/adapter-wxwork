@@ -1,5 +1,3 @@
-"""企业微信协议层 Pydantic 模型，用于标准化 JSON 解析。"""
-
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,11 +19,6 @@ class WsEnvelope(BaseModel):
 
 class WsFrom(BaseModel):
     userid: str = ""
-
-
-# ---------------------------------------------------------------------------
-# WS 消息回调 body 中的各消息类型内容模型
-# ---------------------------------------------------------------------------
 
 
 class WsTextContent(BaseModel):

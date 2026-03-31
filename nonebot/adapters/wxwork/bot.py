@@ -1,5 +1,3 @@
-"""企业微信 Bot 实现。"""
-
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from typing_extensions import override

@@ -1,5 +1,3 @@
-"""企业微信适配器：支持 Webhook（短连接）和 WebSocket（长连接）两种模式。"""
-
 import asyncio
 import json
 import time

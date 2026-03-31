@@ -1,9 +1,3 @@
-"""企业微信事件模型。
-
-Webhook（短连接）模式：POST XML 解密后得到以下事件类型。
-WebSocket（长连接）模式：aibot_msg_callback / aibot_event_callback JSON。
-"""
-
 from typing import Any, Literal
 from typing_extensions import override
 
@@ -17,14 +11,8 @@ from .message import Message, MessageSegment
 from .models import WsEnvelope, WsEventCallbackBody, WsMsgCallbackBody
 from .utils import log
 
-# ---------------------------------------------------------------------------
-# 基类
-# ---------------------------------------------------------------------------
-
 
 class Event(BaseEvent):
-    """企业微信协议事件基类。"""
-
     __event__: str = ""
 
     @override

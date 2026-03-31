@@ -1,5 +1,3 @@
-"""企业微信（WeCom）协议适配。"""
-
 from .adapter import Adapter as Adapter
 from .bot import Bot as Bot
 from .event import *  # noqa: F403
