@@ -12,7 +12,6 @@ import xmltodict
 
 from nonebot import get_plugin_config
 from nonebot.adapters import Adapter as BaseAdapter
-from nonebot.compat import type_validate_python
 from nonebot.drivers import (
     URL,
     ASGIMixin,
@@ -31,13 +30,9 @@ from .bot import Bot
 from .config import BotConfig, Config, WebhookBotConfig, WsBotConfig
 from .crypto import WxBizMsgCrypt
 from .event import (
-    WEBHOOK_EVENT_EVENTS,
-    WEBHOOK_MSG_EVENTS,
-    WS_EVENT_TYPES,
-    Event,
     WsDisconnectedEvent,
-    WsEventCallbackEvent,
-    WsMsgCallbackEvent,
+    ws_to_event,
+    xml_to_event,
 )
 from .exception import (
     ActionFailed,
@@ -49,8 +44,6 @@ from .models import (
     AccessTokenResponse,
     ApiResponse,
     WsEnvelope,
-    WsEventCallbackBody,
-    WsMsgCallbackBody,
 )
 from .utils import log
 
@@ -188,36 +181,13 @@ class Adapter(BaseAdapter):
         except Exception:
             return Response(400, content=b"invalid decrypted xml")
 
-        event = self._xml_to_event(msg_data)
+        event = xml_to_event(msg_data)
         if event is not None:
             task = asyncio.create_task(cast(Bot, bot).handle_event(event))
             task.add_done_callback(self.tasks.discard)
             self.tasks.add(task)
 
         return Response(200, content=b"success")
-
-    @classmethod
-    def _xml_to_event(cls, data: dict[str, Any]) -> Event | None:
-        msg_type = data.get("MsgType", "")
-        try:
-            if msg_type == "event":
-                event_type = data.get("Event", "")
-                event_cls = WEBHOOK_EVENT_EVENTS.get(event_type)
-                if event_cls is None:
-                    return None
-                return type_validate_python(event_cls, data)
-            else:
-                event_cls = WEBHOOK_MSG_EVENTS.get(msg_type)
-                if event_cls is None:
-                    return None
-                return type_validate_python(event_cls, data)
-        except Exception as e:
-            log(
-                "ERROR",
-                f"Failed to parse webhook event. Raw: {escape_tag(str(data))}",
-                e,
-            )
-            return None
 
     async def _forward_ws(self, bot: "Bot", bot_config: WsBotConfig) -> None:
         """维护单个机器人的 WebSocket 长连接，含断线重连。"""
@@ -275,7 +245,7 @@ class Adapter(BaseAdapter):
                             except Exception:
                                 continue
 
-                            event = self._ws_to_event(data)
+                            event = ws_to_event(data)
                             if event is None:
                                 continue
 
@@ -340,55 +310,6 @@ class Adapter(BaseAdapter):
             except Exception:
                 break
             await asyncio.sleep(PING_INTERVAL)
-
-    @classmethod
-    def _ws_to_event(cls, data: dict[str, Any]) -> Event | None:
-        try:
-            envelope = WsEnvelope.model_validate(data)
-            cmd = envelope.cmd
-            req_id = envelope.headers.req_id
-
-            if cmd == "aibot_msg_callback":
-                body = WsMsgCallbackBody.model_validate(envelope.body)
-                msg_id_int = int(body.msgid) if body.msgid.isdigit() else 0
-                return WsMsgCallbackEvent(
-                    cmd=cmd,
-                    req_id=req_id,
-                    msgid=body.msgid,
-                    aibotid=body.aibotid,
-                    chatid=body.chatid,
-                    chattype=body.chattype,
-                    body=body,
-                    FromUserName=body.from_user.userid,
-                    MsgType=body.msgtype,
-                    MsgId=msg_id_int,
-                    to_me=True,
-                )
-            elif cmd == "aibot_event_callback":
-                body = WsEventCallbackBody.model_validate(envelope.body)
-                eventtype = body.event.eventtype
-                if eventtype == "disconnected_event":
-                    return WsDisconnectedEvent(
-                        cmd=cmd,
-                        req_id=req_id,
-                        aibotid=body.aibotid,
-                    )
-                event_cls = WS_EVENT_TYPES.get(eventtype, WsEventCallbackEvent)
-                return event_cls(
-                    cmd=cmd,
-                    req_id=req_id,
-                    msgid=body.msgid,
-                    aibotid=body.aibotid,
-                    chatid=body.chatid,
-                    chattype=body.chattype,
-                    body=body,
-                    FromUserName=body.from_user.userid,
-                    Event=eventtype,
-                    CreateTime=body.create_time,
-                )
-        except Exception as e:
-            log("ERROR", f"Failed to parse WS event. Raw: {escape_tag(str(data))}", e)
-        return None
 
     # ------------------------------------------------------------------
     # API 调用（Webhook 模式：发送消息 via REST API）

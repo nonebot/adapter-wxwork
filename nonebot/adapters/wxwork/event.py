@@ -4,16 +4,18 @@ Webhook（短连接）模式：POST XML 解密后得到以下事件类型。
 WebSocket（长连接）模式：aibot_msg_callback / aibot_event_callback JSON。
 """
 
-from typing import Literal
+from typing import Any, Literal
 from typing_extensions import override
 
 from pydantic import Field
 
 from nonebot.adapters import Event as BaseEvent
+from nonebot.compat import type_validate_python
 from nonebot.utils import escape_tag
 
 from .message import Message, MessageSegment
-from .models import WsEventCallbackBody, WsMsgCallbackBody
+from .models import WsEnvelope, WsEventCallbackBody, WsMsgCallbackBody
+from .utils import log
 
 # ---------------------------------------------------------------------------
 # 基类
@@ -359,22 +361,16 @@ class WsMsgCallbackEvent(MessageEvent):
             return Message(MessageSegment.text(b.text.content))
 
         if msgtype == "image" and b.image:
-            return Message(
-                MessageSegment.image(url=b.image.url, aeskey=b.image.aeskey)
-            )
+            return Message(MessageSegment.image(url=b.image.url, aeskey=b.image.aeskey))
 
         if msgtype == "voice" and b.voice:
             return Message(MessageSegment.voice(content=b.voice.content))
 
         if msgtype == "file" and b.file:
-            return Message(
-                MessageSegment.file(url=b.file.url, aeskey=b.file.aeskey)
-            )
+            return Message(MessageSegment.file(url=b.file.url, aeskey=b.file.aeskey))
 
         if msgtype == "video" and b.video:
-            return Message(
-                MessageSegment.video(url=b.video.url, aeskey=b.video.aeskey)
-            )
+            return Message(MessageSegment.video(url=b.video.url, aeskey=b.video.aeskey))
 
         if msgtype == "mixed" and b.mixed:
             msg = Message()
@@ -518,3 +514,79 @@ WS_EVENT_TYPES: dict[str, type[WsEventCallbackEvent]] = {
     "template_card_event": WsTemplateCardEvent,
     "feedback_event": WsFeedbackEvent,
 }
+
+
+def xml_to_event(data: dict[str, Any]) -> Event | None:
+    """将 Webhook XML 解密后的 dict 转为对应的 Event 实例。"""
+    msg_type = data.get("MsgType", "")
+    try:
+        if msg_type == "event":
+            event_type = data.get("Event", "")
+            if (event_cls := WEBHOOK_EVENT_EVENTS.get(event_type)) is None:
+                return None
+
+            return type_validate_python(event_cls, data)
+        else:
+            if (event_cls := WEBHOOK_MSG_EVENTS.get(msg_type)) is None:
+                return None
+
+            return type_validate_python(event_cls, data)
+    except Exception as e:
+        log(
+            "ERROR",
+            f"Failed to parse webhook event. Raw: {escape_tag(str(data))}",
+            e,
+        )
+
+
+def ws_to_event(data: dict[str, Any]) -> Event | None:
+    """将 WebSocket JSON 消息转为对应的 Event 实例。"""
+    try:
+        envelope = WsEnvelope.model_validate(data)
+        cmd = envelope.cmd
+        req_id = envelope.headers.req_id
+
+        if cmd == "aibot_msg_callback":
+            body = WsMsgCallbackBody.model_validate(envelope.body)
+            msg_id_int = int(body.msgid) if body.msgid.isdigit() else 0
+
+            return WsMsgCallbackEvent(
+                cmd=cmd,
+                req_id=req_id,
+                msgid=body.msgid,
+                aibotid=body.aibotid,
+                chatid=body.chatid,
+                chattype=body.chattype,
+                body=body,
+                FromUserName=body.from_user.userid,
+                MsgType=body.msgtype,
+                MsgId=msg_id_int,
+                to_me=True,
+            )
+        elif cmd == "aibot_event_callback":
+            body = WsEventCallbackBody.model_validate(envelope.body)
+            eventtype = body.event.eventtype
+            if eventtype == "disconnected_event":
+                return WsDisconnectedEvent(
+                    cmd=cmd,
+                    req_id=req_id,
+                    aibotid=body.aibotid,
+                )
+
+            event_cls = WS_EVENT_TYPES.get(eventtype, WsEventCallbackEvent)
+
+            return event_cls(
+                cmd=cmd,
+                req_id=req_id,
+                msgid=body.msgid,
+                aibotid=body.aibotid,
+                chatid=body.chatid,
+                chattype=body.chattype,
+                body=body,
+                FromUserName=body.from_user.userid,
+                Event=eventtype,
+                CreateTime=body.create_time,
+            )
+
+    except Exception as e:
+        log("ERROR", f"Failed to parse WS event. Raw: {escape_tag(str(data))}", e)
