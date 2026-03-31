@@ -1,4 +1,7 @@
+import asyncio
+import base64
 from collections.abc import Callable
+import hashlib
 from typing import TYPE_CHECKING, Any, cast
 from typing_extensions import override
 import uuid
@@ -131,6 +134,8 @@ class Bot(BaseBot):
         self.bot_config: BotConfig = bot_config
         # WebSocket 连接实例（仅 WS 模式使用）
         self._ws: WebSocket | None = None
+        # 等待服务端回执的 Future 表（req_id -> Future）
+        self._pending_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     @override
     async def send(
@@ -210,3 +215,91 @@ class Bot(BaseBot):
                 __req_id__=req_id,
                 **send_data,
             )
+
+    async def ws_update_template_card(
+        self,
+        req_id: str,
+        template_card: dict[str, Any],
+        userids: list[str] | None = None,
+    ) -> Any:
+        """更新模板卡片（收到 template_card_event 事件后调用，长连接模式）。
+
+        需在收到事件回调后 5 秒内调用，超时将无法更新卡片。
+
+        Args:
+            req_id: 对应事件的 req_id。
+            template_card: 模板卡片内容，task_id 需与回调中的 task_id 一致。
+            userids: 要替换模板卡片消息的 userid 列表，不填则替换所有用户。
+        """
+        body: dict[str, Any] = {
+            "response_type": "update_template_card",
+            "template_card": template_card,
+        }
+        if userids:
+            body["userids"] = userids
+        return await self.call_api(
+            "aibot_respond_update_msg",
+            __req_id__=req_id,
+            **body,
+        )
+
+    async def ws_upload_media(
+        self,
+        file_data: bytes,
+        media_type: str,
+        filename: str,
+    ) -> dict[str, Any]:
+        """通过 WebSocket 三步分片上传临时素材（长连接模式）。
+
+        Args:
+            file_data: 文件二进制数据。
+            media_type: 素材类型（file / image / voice / video）。
+            filename: 文件名。
+
+        Returns:
+            包含 ``media_id``、``type``、``created_at`` 的字典。
+        """
+
+        total_size = len(file_data)
+        chunk_size = 512 * 1024  # 512KB per chunk
+        total_chunks = (total_size + chunk_size - 1) // chunk_size
+        if total_chunks > 100:
+            raise ValueError(
+                f"File too large: {total_chunks} chunks exceeds maximum of 100"
+            )
+        md5 = hashlib.md5(file_data).hexdigest()
+
+        # Step 1: init
+        init_result = await self.call_api(
+            "aibot_upload_media_init",
+            type=media_type,
+            filename=filename,
+            total_size=total_size,
+            total_chunks=total_chunks,
+            md5=md5,
+        )
+        upload_id = (
+            init_result.get("upload_id", "") if isinstance(init_result, dict) else ""
+        )
+        if not upload_id:
+            raise RuntimeError(f"Upload init failed: {init_result}")
+
+        # Step 2: upload chunks
+        for i in range(total_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, total_size)
+            chunk = file_data[start:end]
+            b64 = base64.b64encode(chunk).decode()
+            await self.call_api(
+                "aibot_upload_media_chunk",
+                upload_id=upload_id,
+                chunk_index=i,
+                base64_data=b64,
+            )
+
+        # Step 3: finish
+        finish_result = await self.call_api(
+            "aibot_upload_media_finish",
+            upload_id=upload_id,
+        )
+        return finish_result if isinstance(finish_result, dict) else {}

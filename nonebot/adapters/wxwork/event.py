@@ -439,10 +439,13 @@ class WsTemplateCardEvent(WsEventCallbackEvent):
     """模板卡片事件（template_card_event）。
 
     用户点击模板卡片按钮时触发。
+    ``event_key`` 为用户点击的按钮 key，``task_id`` 为对应的任务 ID。
     """
 
     __event__ = "notice.template_card_event"
     Event: Literal["template_card_event"] = "template_card_event"
+    event_key: str = ""
+    task_id: str = ""
 
 
 class WsFeedbackEvent(WsEventCallbackEvent):
@@ -563,18 +566,25 @@ def ws_to_event(data: dict[str, Any]) -> Event | None:
 
             event_cls = WS_EVENT_TYPES.get(eventtype, WsEventCallbackEvent)
 
-            return event_cls(
-                cmd=cmd,
-                req_id=req_id,
-                msgid=body.msgid,
-                aibotid=body.aibotid,
-                chatid=body.chatid,
-                chattype=body.chattype,
-                body=body,
-                FromUserName=body.from_user.userid,
-                Event=eventtype,
-                CreateTime=body.create_time,
-            )
+            kwargs: dict[str, Any] = {
+                "cmd": cmd,
+                "req_id": req_id,
+                "msgid": body.msgid,
+                "aibotid": body.aibotid,
+                "chatid": body.chatid,
+                "chattype": body.chattype,
+                "body": body,
+                "FromUserName": body.from_user.userid,
+                "CreateTime": body.create_time,
+            }
+
+            if event_cls is WsEventCallbackEvent:
+                kwargs["Event"] = eventtype
+            elif event_cls is WsTemplateCardEvent:
+                kwargs["event_key"] = body.event.event_key or ""
+                kwargs["task_id"] = body.event.task_id or ""
+
+            return event_cls(**kwargs)
 
     except Exception as e:
         log("ERROR", f"Failed to parse WS event. Raw: {escape_tag(str(data))}", e)

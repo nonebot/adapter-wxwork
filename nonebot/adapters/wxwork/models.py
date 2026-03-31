@@ -19,6 +19,7 @@ class WsEnvelope(BaseModel):
 
 class WsFrom(BaseModel):
     userid: str = ""
+    corpid: str | None = None
 
 
 class WsTextContent(BaseModel):
@@ -68,6 +69,17 @@ class WsMixedContent(BaseModel):
     msg_item: list[WsMixedItem] = Field(default_factory=list)
 
 
+class WsQuoteContent(BaseModel):
+    """引用消息内容（用户引用了其他消息时存在）。"""
+
+    msgtype: str = ""
+    text: WsTextContent | None = None
+    image: WsImageContent | None = None
+    voice: WsVoiceContent | None = None
+    file: WsFileContent | None = None
+    mixed: WsMixedContent | None = None
+
+
 class WsMsgCallbackBody(BaseModel):
     """aibot_msg_callback 的 body 部分。"""
 
@@ -76,6 +88,8 @@ class WsMsgCallbackBody(BaseModel):
     chattype: str = "single"
     msgid: str = ""
     msgtype: str = ""
+    create_time: int | None = None
+    response_url: str | None = None
     from_user: WsFrom = Field(default_factory=WsFrom, alias="from")
 
     # 各消息类型内容（按 msgtype 只有对应字段非 None）
@@ -86,11 +100,16 @@ class WsMsgCallbackBody(BaseModel):
     video: WsVideoContent | None = None
     mixed: WsMixedContent | None = None
 
+    # 引用消息（用户引用了其他消息时存在）
+    quote: WsQuoteContent | None = None
+
     model_config = {"populate_by_name": True}
 
 
 class WsEventDetail(BaseModel):
     eventtype: str = ""
+    event_key: str | None = None
+    task_id: str | None = None
 
 
 class WsEventCallbackBody(BaseModel):

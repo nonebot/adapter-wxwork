@@ -243,6 +243,20 @@ class Adapter(BaseAdapter):
                             except Exception:
                                 continue
 
+                            # 无 cmd 的帧是回执（认证响应、心跳响应、回复回执）
+                            cmd = data.get("cmd", "")
+                            if not cmd:
+                                ack_req_id = (
+                                    data.get("headers", {}).get("req_id", "")
+                                )
+                                if ack_req_id and ack_req_id in bot._pending_acks:
+                                    fut = bot._pending_acks.pop(ack_req_id)
+                                    if not fut.done():
+                                        fut.set_result(
+                                            data.get("body") or data
+                                        )
+                                continue
+
                             event = ws_to_event(data)
                             if event is None:
                                 continue
@@ -277,6 +291,13 @@ class Adapter(BaseAdapter):
                         if ping_task is not None:
                             ping_task.cancel()
                         bot._ws = None
+                        # 清理所有未完成的回执等待
+                        for fut in bot._pending_acks.values():
+                            if not fut.done():
+                                fut.set_exception(
+                                    RuntimeError("WebSocket disconnected")
+                                )
+                        bot._pending_acks.clear()
                         if registered:
                             self.bot_disconnect(bot)
 
@@ -370,6 +391,17 @@ class Adapter(BaseAdapter):
             req = Request(method, url, json=data)
         return await self.send_request(req)
 
+    # 需要等待服务端回执的命令集合
+    _WAIT_ACK_CMDS = frozenset({
+        "aibot_upload_media_init",
+        "aibot_upload_media_chunk",
+        "aibot_upload_media_finish",
+        "aibot_respond_msg",
+        "aibot_respond_welcome_msg",
+        "aibot_respond_update_msg",
+        "aibot_send_msg",
+    })
+
     async def _ws_call_api(self, bot: "Bot", api: str, **data: Any) -> Any:
         """通过 WebSocket 发送命令（长连接模式）。"""
         ws = bot._ws
@@ -382,7 +414,22 @@ class Adapter(BaseAdapter):
             "body": data,
         }
         await ws.send_text(json.dumps(payload))
-        return {"errcode": 0, "errmsg": "ok"}
+
+        if api not in self._WAIT_ACK_CMDS:
+            return {"errcode": 0, "errmsg": "ok"}
+
+        # 等待服务端回执
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        bot._pending_acks[req_id] = fut
+        try:
+            return await asyncio.wait_for(fut, timeout=10.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"WebSocket ack timeout for cmd={api}, req_id={req_id}"
+            )
+        finally:
+            bot._pending_acks.pop(req_id, None)
 
     async def send_request(self, request: Request) -> Any:
         if not isinstance(self.driver, HTTPClientMixin):
