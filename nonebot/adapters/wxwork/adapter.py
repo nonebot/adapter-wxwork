@@ -18,6 +18,7 @@ from nonebot.drivers import (
     HTTPServerSetup,
     Request,
     Response,
+    Timeout,
     WebSocket,
     WebSocketClientMixin,
 )
@@ -121,6 +122,11 @@ class Adapter(BaseAdapter):
             if not task.done():
                 task.cancel()
 
+        await asyncio.gather(
+            *(asyncio.wait_for(task, timeout=10) for task in self.tasks),
+            return_exceptions=True,
+        )
+
     async def _handle_http(self, request: Request) -> Response:
         """处理企业微信 Webhook 回调（GET 验证 + POST 消息）。"""
         self_id = request.url.parts[-1]
@@ -190,7 +196,7 @@ class Adapter(BaseAdapter):
     async def _forward_ws(self, bot: "Bot", bot_config: WsBotConfig) -> None:
         """维护单个机器人的 WebSocket 长连接，含断线重连。"""
         url = str(self.wxwork_config.wxwork_ws_url)
-        request = Request("GET", URL(url), headers={}, timeout=30.0)
+        request = Request("GET", URL(url), headers={}, timeout=Timeout(close=0))
 
         while True:
             registered = False
@@ -222,10 +228,6 @@ class Adapter(BaseAdapter):
                         resp = WsEnvelope.model_validate_json(raw)
                         if resp.errcode != 0:
                             raise RuntimeError(f"WS subscribe failed: {resp}")
-                        log(
-                            "INFO",
-                            f"Bot {escape_tag(bot_config.bot_id)} WS subscribed",
-                        )
 
                         self.bot_connect(bot)
                         registered = True
@@ -246,15 +248,11 @@ class Adapter(BaseAdapter):
                             # 无 cmd 的帧是回执（认证响应、心跳响应、回复回执）
                             cmd = data.get("cmd", "")
                             if not cmd:
-                                ack_req_id = (
-                                    data.get("headers", {}).get("req_id", "")
-                                )
+                                ack_req_id = data.get("headers", {}).get("req_id", "")
                                 if ack_req_id and ack_req_id in bot._pending_acks:
                                     fut = bot._pending_acks.pop(ack_req_id)
                                     if not fut.done():
-                                        fut.set_result(
-                                            data.get("body") or data
-                                        )
+                                        fut.set_result(data.get("body") or data)
                                 continue
 
                             event = ws_to_event(data)
@@ -392,15 +390,17 @@ class Adapter(BaseAdapter):
         return await self.send_request(req)
 
     # 需要等待服务端回执的命令集合
-    _WAIT_ACK_CMDS = frozenset({
-        "aibot_upload_media_init",
-        "aibot_upload_media_chunk",
-        "aibot_upload_media_finish",
-        "aibot_respond_msg",
-        "aibot_respond_welcome_msg",
-        "aibot_respond_update_msg",
-        "aibot_send_msg",
-    })
+    _WAIT_ACK_CMDS = frozenset(
+        {
+            "aibot_upload_media_init",
+            "aibot_upload_media_chunk",
+            "aibot_upload_media_finish",
+            "aibot_respond_msg",
+            "aibot_respond_welcome_msg",
+            "aibot_respond_update_msg",
+            "aibot_send_msg",
+        }
+    )
 
     async def _ws_call_api(self, bot: "Bot", api: str, **data: Any) -> Any:
         """通过 WebSocket 发送命令（长连接模式）。"""
@@ -425,9 +425,7 @@ class Adapter(BaseAdapter):
         try:
             return await asyncio.wait_for(fut, timeout=10.0)
         except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"WebSocket ack timeout for cmd={api}, req_id={req_id}"
-            )
+            raise RuntimeError(f"WebSocket ack timeout for cmd={api}, req_id={req_id}")
         finally:
             bot._pending_acks.pop(req_id, None)
 
