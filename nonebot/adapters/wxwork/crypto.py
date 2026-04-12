@@ -10,6 +10,7 @@ from .exception import ActionFailed
 
 def _compute_signature(token: str, timestamp: str, nonce: str, msg_encrypt: str) -> str:
     parts = sorted([token, timestamp, nonce, msg_encrypt])
+
     return hashlib.sha1("".join(parts).encode()).hexdigest()
 
 
@@ -25,14 +26,17 @@ class WxBizMsgCrypt:
         self, msg_signature: str, timestamp: str, nonce: str, msg_encrypt: str
     ) -> bool:
         expected = _compute_signature(self.token, timestamp, nonce, msg_encrypt)
+
         return expected == msg_signature
 
     def _pkcs7_unpad(self, data: bytes) -> bytes:
         pad_len = data[-1]
+
         return data[:-pad_len]
 
     def _pkcs7_pad(self, data: bytes, block_size: int = 32) -> bytes:
         pad_len = block_size - (len(data) % block_size)
+
         return data + bytes([pad_len] * pad_len)
 
     def decrypt(self, msg_encrypt: str) -> str:
